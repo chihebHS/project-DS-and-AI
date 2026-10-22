@@ -1,0 +1,19 @@
+Sarah Benali
+sarah.benali@example.com - Tunis
+Développeuse Python / Data Engineer - 4 ans d'expérience
+
+EXPÉRIENCE
+2022 - aujourd'hui : Data Engineer chez DataWave
+- Conception de pipelines ETL avec Python, Airflow et PostgreSQL
+- Mise en place d'une API FastAPI pour exposer des modèles de machine learning
+- Déploiement avec Docker sur AWS
+2020 - 2022 : Développeuse Python chez SoftLab
+- Développement d'applications web avec Django
+- Écriture de tests automatisés (pytest)
+
+FORMATION
+Diplôme d'ingénieur en informatique - ENSI (2020)
+
+COMPÉTENCES
+Python, FastAPI, Django, SQL, PostgreSQL, Airflow, Docker, AWS, Git, pandas
+Langues : français, arabe, anglais (courant)

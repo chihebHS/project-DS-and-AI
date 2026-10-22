@@ -1,0 +1,17 @@
+Karim Mansour
+karim.mansour@example.com - Sfax
+Développeur Frontend React - 3 ans d'expérience
+
+EXPÉRIENCE
+2021 - aujourd'hui : Développeur Frontend chez WebCraft
+- Développement d'interfaces en React et TypeScript
+- Intégration de maquettes Figma, design responsive
+- Optimisation des performances (Lighthouse 95+)
+Stage 2021 : Intégrateur web chez PixelAgency (HTML, CSS, JavaScript)
+
+FORMATION
+Licence en informatique de gestion - ISG Sfax (2021)
+
+COMPÉTENCES
+React, TypeScript, JavaScript, Next.js, Tailwind CSS, Redux, Jest, Git, Figma
+Langues : français, arabe, anglais (intermédiaire)

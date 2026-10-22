@@ -1,0 +1,11 @@
+# Serveur MCP
+mcp>=1.20,<2
+chromadb
+pypdf
+python-docx
+# Backend
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv
+groq

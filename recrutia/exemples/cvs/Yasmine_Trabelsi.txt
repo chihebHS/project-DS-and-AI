@@ -1,0 +1,17 @@
+Yasmine Trabelsi
+yasmine.trabelsi@example.com - Tunis
+Data Scientist junior - spécialisée en NLP
+
+EXPÉRIENCE
+2023 - aujourd'hui : Data Scientist chez InsightAI
+- Classification de textes et analyse de sentiments (Transformers, Hugging Face)
+- Création d'un chatbot RAG avec LangChain et une base vectorielle
+- Mise en production des modèles avec FastAPI
+Stage 2023 : Analyse de données clients avec Python et Power BI
+
+FORMATION
+Master en science des données - Université de Tunis (2023)
+
+COMPÉTENCES
+Python, scikit-learn, PyTorch, Transformers, LangChain, NLP, SQL, FastAPI, Power BI
+Langues : français, arabe, anglais (courant)

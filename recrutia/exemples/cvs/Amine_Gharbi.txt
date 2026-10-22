@@ -1,0 +1,17 @@
+Amine Gharbi
+amine.gharbi@example.com - Sousse
+Ingénieur DevOps / Cloud - 5 ans d'expérience
+
+EXPÉRIENCE
+2021 - aujourd'hui : Ingénieur DevOps chez CloudNet
+- Gestion de clusters Kubernetes et pipelines CI/CD (GitLab CI)
+- Infrastructure as Code avec Terraform sur Azure et AWS
+- Supervision avec Prometheus et Grafana
+2019 - 2021 : Administrateur systèmes Linux chez TelcoServ
+
+FORMATION
+Diplôme d'ingénieur en réseaux et télécommunications - INSAT (2019)
+
+COMPÉTENCES
+Docker, Kubernetes, Terraform, AWS, Azure, Linux, Bash, Python, GitLab CI, Prometheus
+Langues : français, arabe, anglais (courant)

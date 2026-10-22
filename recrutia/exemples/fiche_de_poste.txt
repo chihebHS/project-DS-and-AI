@@ -1,0 +1,9 @@
+Titre : Développeur Backend Python (H/F)
+
+Description :
+Nous recherchons un développeur backend Python pour rejoindre notre équipe produit.
+Vous développerez des API REST performantes, travaillerez avec des bases de données
+SQL et participerez à l'intégration de fonctionnalités d'intelligence artificielle.
+Expérience de 2 ans minimum. Travail en équipe agile.
+
+Compétences : Python, FastAPI, SQL, PostgreSQL, Docker, Git, notions de machine learning
