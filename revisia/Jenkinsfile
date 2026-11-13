@@ -1,0 +1,305 @@
+// Pipeline CI/CD de RevisIA : qualité → images Docker → scan → registre → Kubernetes.
+//
+// Prérequis Jenkins :
+//   - un agent avec Docker (tous les outils tournent dans des conteneurs : python, node, trivy, kubectl, kustomize)
+//   - plugins : Pipeline, Docker Pipeline, Credentials Binding, JUnit, Timestamper
+//   - credentials :
+//       docker-registry      (username/password) : accès au registre d'images
+//       kubeconfig-staging   (secret file)        : accès au cluster de staging
+//       kubeconfig-prod      (secret file)        : accès au cluster de production
+//       groq-api-key         (secret text)        : clé Groq, injectée dans le Secret Kubernetes
+//       revisia-neo4j-password (secret text)      : mot de passe Neo4j, injecté dans le Secret Kubernetes
+//   - job multibranch, « Script Path » = revisia/Jenkinsfile (le dépôt contient plusieurs projets)
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        string(name: 'REGISTRY', defaultValue: 'registry.example.com/revisia', description: 'Registre des images')
+        booleanParam(name: 'FAIL_ON_VULNERABILITIES', defaultValue: false,
+                     description: 'Échouer si Trivy trouve des vulnérabilités CRITICAL corrigeables')
+        booleanParam(name: 'SKIP_DEPLOY', defaultValue: false, description: 'Construire sans déployer')
+    }
+
+    environment {
+        APP_DIR = 'revisia'
+        PY_IMAGE = 'python:3.12-slim'
+        NODE_IMAGE = 'node:20-alpine'
+        KUBECTL_IMAGE = 'bitnami/kubectl:1.31'
+        KUSTOMIZE_IMAGE = 'registry.k8s.io/kustomize/kustomize:v5.4.3'
+        TRIVY_IMAGE = 'aquasec/trivy:0.56.2'
+        NEO4J_IMAGE = 'neo4j:5.26-community'
+        PIP_CACHE_DIR = "${WORKSPACE}/.cache/pip"
+        NPM_CONFIG_CACHE = "${WORKSPACE}/.cache/npm"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_SHORT = sh(script: 'git rev-parse --short=8 HEAD', returnStdout: true).trim()
+                    env.IMAGE_TAG = "${env.BUILD_NUMBER}-${env.GIT_SHORT}"
+                    currentBuild.displayName = "#${env.BUILD_NUMBER} ${env.IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Qualité') {
+            parallel {
+                stage('Backend + MCP : lint & tests (+ Neo4j)') {
+                    steps {
+                        script {
+                            // Un vrai Neo4j tourne à côté des tests : le graphe est testé en Cypher, pas seulement en SQLite
+                            docker.image(env.NEO4J_IMAGE).withRun('-e NEO4J_AUTH=neo4j/ci-neo4j-password') { neo4j ->
+                                docker.image(env.PY_IMAGE).inside("-e HOME=/tmp --link ${neo4j.id}:neo4j") {
+                                    dir(env.APP_DIR) {
+                                        sh '''
+                                            python -m venv /tmp/venv && . /tmp/venv/bin/activate
+                                            pip install -q -r requirements-dev.txt
+                                            ruff check .
+                                            python -c "
+import time
+from neo4j import GraphDatabase
+for _ in range(60):
+    try:
+        GraphDatabase.driver('bolt://neo4j:7687', auth=('neo4j', 'ci-neo4j-password')).verify_connectivity()
+        print('Neo4j prêt'); break
+    except Exception:
+        time.sleep(2)
+"
+                                            mkdir -p reports
+                                            NEO4J_TEST_URI=bolt://neo4j:7687 NEO4J_TEST_PASSWORD=ci-neo4j-password \
+                                            pytest --junitxml=reports/junit.xml \
+                                                   --cov --cov-report=xml:reports/coverage.xml --cov-report=term
+                                        '''
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true, testResults: "${APP_DIR}/reports/junit.xml"
+                            archiveArtifacts allowEmptyArchive: true, artifacts: "${APP_DIR}/reports/*.xml"
+                        }
+                    }
+                }
+                stage('Frontend : build') {
+                    agent {
+                        docker {
+                            image "${NODE_IMAGE}"
+                            reuseNode true
+                        }
+                    }
+                    steps {
+                        dir("${APP_DIR}/frontend") {
+                            sh 'npm ci --no-audit --no-fund && npm run build'
+                        }
+                    }
+                }
+                stage('Manifestes Kubernetes') {
+                    steps {
+                        dir(env.APP_DIR) {
+                            // Rendu des overlays : une erreur de YAML ou de patch fait échouer le build ici
+                            sh '''
+                                for env in staging production; do
+                                  docker run --rm -v "$PWD/k8s:/k8s" ${KUSTOMIZE_IMAGE} build /k8s/overlays/$env > /dev/null
+                                  echo "overlay $env OK"
+                                done
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Images Docker') {
+            steps {
+                dir(env.APP_DIR) {
+                    script {
+                        def images = [
+                            'revisia-mcp'     : 'mcp_server/Dockerfile',
+                            'revisia-backend' : 'backend/Dockerfile',
+                            'revisia-frontend': 'frontend/Dockerfile',
+                        ]
+                        def builds = [:]
+                        images.each { name, dockerfile ->
+                            builds[name] = {
+                                sh """
+                                    docker build --pull \
+                                      --label org.opencontainers.image.revision=${env.GIT_SHORT} \
+                                      --label org.opencontainers.image.version=${env.IMAGE_TAG} \
+                                      -f ${dockerfile} -t ${params.REGISTRY}/${name}:${env.IMAGE_TAG} .
+                                """
+                            }
+                        }
+                        parallel builds
+                    }
+                }
+            }
+        }
+
+        stage('Scan de sécurité (Trivy)') {
+            steps {
+                script {
+                    def exitCode = params.FAIL_ON_VULNERABILITIES ? 1 : 0
+                    ['revisia-mcp', 'revisia-backend', 'revisia-frontend'].each { name ->
+                        sh """
+                            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                              -v "${WORKSPACE}/.cache/trivy:/root/.cache/" ${TRIVY_IMAGE} image \
+                              --severity HIGH,CRITICAL --ignore-unfixed --exit-code ${exitCode} --no-progress \
+                              ${params.REGISTRY}/${name}:${env.IMAGE_TAG}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Publication des images') {
+            when { anyOf { branch 'main'; branch 'develop' } }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker-registry',
+                                                  usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+                    sh '''
+                        echo "$REG_PASS" | docker login "${REGISTRY%%/*}" -u "$REG_USER" --password-stdin
+                        for name in revisia-mcp revisia-backend revisia-frontend; do
+                          docker push "$REGISTRY/$name:$IMAGE_TAG"
+                        done
+                    '''
+                }
+            }
+        }
+
+        stage('Déploiement staging') {
+            when {
+                allOf {
+                    anyOf { branch 'main'; branch 'develop' }
+                    expression { !params.SKIP_DEPLOY }
+                }
+            }
+            steps {
+                deployTo('staging', 'revisia-staging', 'kubeconfig-staging')
+            }
+            post {
+                failure { rollback('revisia-staging', 'kubeconfig-staging') }
+            }
+        }
+
+        stage('Validation production') {
+            when {
+                allOf {
+                    branch 'main'
+                    expression { !params.SKIP_DEPLOY }
+                }
+            }
+            steps {
+                timeout(time: 30, unit: 'MINUTES') {
+                    input message: "Déployer ${env.IMAGE_TAG} en production ?", ok: 'Déployer'
+                }
+            }
+        }
+
+        stage('Déploiement production') {
+            when {
+                allOf {
+                    branch 'main'
+                    expression { !params.SKIP_DEPLOY }
+                }
+            }
+            steps {
+                deployTo('production', 'revisia', 'kubeconfig-prod')
+            }
+            post {
+                failure { rollback('revisia', 'kubeconfig-prod') }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "RevisIA ${env.IMAGE_TAG} : pipeline réussi"
+        }
+        failure {
+            echo "RevisIA ${env.IMAGE_TAG} : échec du pipeline"
+        }
+        always {
+            sh '''
+                for name in revisia-mcp revisia-backend revisia-frontend; do
+                  docker rmi "$REGISTRY/$name:$IMAGE_TAG" 2>/dev/null || true
+                done
+            '''
+            cleanWs(deleteDirs: true, notFailBuild: true, patterns: [[pattern: '.cache/**', type: 'EXCLUDE']])
+        }
+    }
+}
+
+// ---------- Fonctions de déploiement ----------
+
+// kubectl dans un conteneur, avec le kubeconfig de l'environnement
+def kubectl(String kubeconfigId, String args) {
+    withCredentials([file(credentialsId: kubeconfigId, variable: 'KUBECONFIG_FILE')]) {
+        sh """
+            docker run --rm -u \$(id -u) -v "\$KUBECONFIG_FILE:/kubeconfig:ro" -e KUBECONFIG=/kubeconfig \
+              -v "\$PWD:/work" -w /work ${env.KUBECTL_IMAGE} ${args}
+        """
+    }
+}
+
+def deployTo(String overlay, String namespace, String kubeconfigId) {
+    dir(env.APP_DIR) {
+        // 1. Les images de ce build dans l'overlay (copie de travail uniquement, rien n'est commité)
+        sh """
+            docker run --rm -u \$(id -u) -v "\$PWD/k8s:/k8s" -w /k8s/overlays/${overlay} ${env.KUSTOMIZE_IMAGE} \
+              edit set image \
+                revisia-mcp=${params.REGISTRY}/revisia-mcp:${env.IMAGE_TAG} \
+                revisia-backend=${params.REGISTRY}/revisia-backend:${env.IMAGE_TAG} \
+                revisia-frontend=${params.REGISTRY}/revisia-frontend:${env.IMAGE_TAG}
+        """
+        // 2. Namespace et Secret (idempotents)
+        withCredentials([string(credentialsId: 'groq-api-key', variable: 'GROQ_API_KEY'),
+                         string(credentialsId: 'revisia-neo4j-password', variable: 'NEO4J_PASSWORD')]) {
+            withCredentials([file(credentialsId: kubeconfigId, variable: 'KUBECONFIG_FILE')]) {
+                sh """
+                    run() { docker run --rm -i -u \$(id -u) -v "\$KUBECONFIG_FILE:/kubeconfig:ro" \
+                              -e KUBECONFIG=/kubeconfig ${env.KUBECTL_IMAGE} "\$@"; }
+                    run create namespace ${namespace} --dry-run=client -o yaml | run apply -f -
+                    run -n ${namespace} create secret generic revisia-secrets \
+                        --from-literal=GROQ_API_KEY="\$GROQ_API_KEY" \
+                        --from-literal=NEO4J_PASSWORD="\$NEO4J_PASSWORD" --dry-run=client -o yaml | run apply -f -
+                """
+            }
+        }
+        // 3. Application des manifestes puis attente des déploiements
+        kubectl(kubeconfigId, "apply -k k8s/overlays/${overlay}")
+        kubectl(kubeconfigId, "-n ${namespace} rollout status statefulset/revisia-neo4j --timeout=300s")
+        ['revisia-mcp', 'revisia-backend', 'revisia-frontend'].each { name ->
+            kubectl(kubeconfigId, "-n ${namespace} rollout status deployment/${name} --timeout=300s")
+        }
+        // 4. Test de fumée : l'API répond et le serveur MCP est joignable depuis le backend
+        kubectl(kubeconfigId, "-n ${namespace} exec deploy/revisia-backend -- python -c " +
+                "\"import urllib.request as u; print(u.urlopen('http://127.0.0.1:8000/api/ready', timeout=10).read())\"")
+        kubectl(kubeconfigId, "-n ${namespace} exec deploy/revisia-backend -- python -c " +
+                "\"import urllib.request as u; print(u.urlopen('http://revisia-frontend/healthz', timeout=10).read())\"")
+    }
+}
+
+def rollback(String namespace, String kubeconfigId) {
+    echo "Échec du déploiement dans ${namespace} : retour à la version précédente"
+    dir(env.APP_DIR) {
+        ['revisia-frontend', 'revisia-backend', 'revisia-mcp'].each { name ->
+            try {
+                kubectl(kubeconfigId, "-n ${namespace} rollout undo deployment/${name}")
+            } catch (err) {
+                echo "Rollback impossible pour ${name} : ${err}"
+            }
+        }
+    }
+}

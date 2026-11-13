@@ -1,0 +1,52 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Le namespace est créé par Jenkins (kubectl create namespace) avant le déploiement
+namespace: revisia-staging
+resources:
+  - ../../base
+# Jenkins remplace ces tags à chaque déploiement (kustomize edit set image)
+images:
+  - name: revisia-mcp
+    newName: registry.example.com/revisia/revisia-mcp
+    newTag: latest
+  - name: revisia-backend
+    newName: registry.example.com/revisia/revisia-backend
+    newTag: latest
+  - name: revisia-frontend
+    newName: registry.example.com/revisia/revisia-frontend
+    newTag: latest
+patches:
+  - target:
+      kind: Ingress
+      name: revisia
+    patch: |
+      - op: replace
+        path: /spec/rules/0/host
+        value: staging.revisia.example.com
+  - target:
+      kind: ConfigMap
+      name: revisia-config
+    patch: |
+      - op: replace
+        path: /data/CORS_ORIGINS
+        value: https://staging.revisia.example.com
+      - op: replace
+        path: /data/LOG_LEVEL
+        value: DEBUG
+  - target:
+      kind: Deployment
+      name: revisia-frontend
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: revisia-frontend
+    patch: |
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+      - op: replace
+        path: /spec/maxReplicas
+        value: 2

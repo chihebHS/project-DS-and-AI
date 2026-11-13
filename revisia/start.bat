@@ -1,6 +1,6 @@
 @echo off
-REM Lance le backend et le frontend dans deux fenetres
-start "Backend" cmd /k "cd backend && .venv\Scripts\activate && uvicorn app.main:app --reload --port 8000"
-start "Frontend" cmd /k "cd frontend && npm run dev"
-timeout /t 5 >nul
+REM Lance le backend (qui démarre lui-même le serveur MCP en stdio) et le frontend de RevisIA
+start "RevisIA - Backend" cmd /k "cd backend && .venv\Scripts\python -m uvicorn app.main:app --reload --reload-dir app --port 8000"
+start "RevisIA - Frontend" cmd /k "cd frontend && npm run dev"
+timeout /t 6 >nul
 start http://localhost:5173

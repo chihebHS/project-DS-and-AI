@@ -1,0 +1,59 @@
+# Le serveur MCP (qui détient les données) n'est joignable que par le backend.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: revisia-mcp-from-backend-only
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: revisia
+      app.kubernetes.io/component: mcp-server
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: revisia
+              app.kubernetes.io/component: backend
+      ports:
+        - port: 8765
+---
+# Le backend n'est joignable que par le frontend (Nginx).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: revisia-backend-from-frontend-only
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: revisia
+      app.kubernetes.io/component: backend
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: revisia
+              app.kubernetes.io/component: frontend
+      ports:
+        - port: 8000
+---
+# Neo4j (le graphe) n'est joignable que par le serveur MCP.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: revisia-neo4j-from-mcp-only
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: revisia
+      app.kubernetes.io/component: neo4j
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: revisia
+              app.kubernetes.io/component: mcp-server
+      ports:
+        - port: 7687

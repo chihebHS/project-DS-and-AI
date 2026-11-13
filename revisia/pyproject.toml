@@ -1,0 +1,29 @@
+[project]
+name = "revisia"
+version = "2.0.0"
+description = "Assistant de révision multi-agents (LangGraph + MCP + RAG + graphe de connaissances)"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["mcp_server/tests", "backend/tests"]
+pythonpath = [".", "backend"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 130
+target-version = "py311"
+extend-exclude = ["frontend", ".venv", "backend/.venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "BLE"]
+ignore = ["B008"]  # File(...) / Form(...) dans les signatures FastAPI
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "mcp_server"]
+
+[tool.coverage.run]
+source = ["backend/app", "mcp_server"]
+omit = ["*/tests/*"]

@@ -1,49 +1,108 @@
-# RevisIA — Assistant de révision intelligent
+# RevisIA v2 — Assistant de révision multi-agents avec graphe de connaissances
 
-Application web qui aide les étudiants à réviser leurs cours grâce à l'IA générative.
+RevisIA aide un étudiant à réviser ses cours avec une IA générative organisée en **agents LangGraph**, qui accèdent aux données via un **serveur MCP**, et un **graphe de connaissances** (Neo4j) qui relie les cours entre eux.
 
-L'étudiant importe un cours (PDF, fichier texte ou **enregistrement audio**), et l'application :
+L'étudiant importe un cours (PDF, texte, **enregistrement audio**, ou texte collé), et l'application :
 
-1. **transcrit** l'audio en texte (Whisper) ;
-2. génère un **résumé**, les **notions clés** et un **quiz** (QCM) ;
-3. permet de **poser des questions** sur ses cours, avec une réponse qui **cite ses sources** (page du PDF ou minute de l'audio) grâce à un système **RAG**.
+1. **transcrit** l'audio (Whisper) ;
+2. **découpe le cours en chapitres** et extrait pour chacun : les **notions enseignées**, les **compétences à acquérir** et les **prérequis** ;
+3. construit un **graphe de connaissances** (cours → chapitres → notions / compétences / prérequis) ;
+4. **relie chaque chapitre aux chapitres précédents dont il dépend** : dans le même cours, ou dans un cours placé **avant** dans le cursus (jamais vers un chapitre suivant) ;
+5. propose un **parcours de révision** : quels chapitres revoir, dans quel ordre, avant d'attaquer un chapitre ;
+6. génère un **résumé**, les **notions clés** et un **quiz** ;
+7. répond aux questions avec une équipe d'agents : tuteur (**RAG** avec sources), navigateur du graphe, examinateur (quiz à la demande).
 
-L'interface et les réponses sont disponibles en **français** et en **anglais**.
+---
+
+## Nouveautés de la v2
+
+| Avant (v1) | Maintenant (v2) |
+|---|---|
+| Un seul appel LLM, cours tronqué à 15 000 caractères | **Graphe LangGraph d'ingestion** : découpage en chapitres, analyse des chapitres **en parallèle**, indexation RAG en parallèle, nouvelles tentatives automatiques |
+| Notions clés en liste plate | **Graphe de connaissances** (modèle Neo4j) : chapitres, notions, **compétences à acquérir**, **prérequis** |
+| Cours isolés | **Liens entre cours** : un agent relie chaque chapitre aux chapitres **précédents** qui enseignent ses prérequis (correspondance exacte ou sémantique, validée par le LLM) |
+| — | **Parcours de révision** calculé sur le graphe (dépendances directes et indirectes) |
+| — | **Visualisation interactive du graphe** (style navigateur Neo4j : zoom, glisser, détails, parcours) |
+| Import bloquant (30 s) | Analyse **en tâche de fond** |
+| Un chat RAG | **Chat multi-agents** (superviseur + tuteur RAG + navigateur du graphe + examinateur) avec **mémoire** |
+| Backend qui lit SQLite / ChromaDB | **Serveur MCP** = seule porte d'accès aux données (18 outils, 1 ressource, 1 prompt) |
+| Pas de tests | **29 tests** (graphe, règles d'ordre, protocole MCP, agents, bout en bout) + test d'intégration Neo4j en CI |
+| Lancement manuel | **Docker**, **Docker Compose** (avec Neo4j), **Kubernetes** (Kustomize) et **pipeline Jenkins** |
+
+Le **RAG** est conservé : recherche sémantique ChromaDB (embeddings locaux `all-MiniLM-L6-v2`) côté serveur MCP, réponses avec citations `[1]`, `[2]` (page du PDF ou minute de l'audio).
+
+---
+
+## Le graphe de connaissances
+
+```
+(:Course)-[:HAS_CHAPTER]->(:Chapter)-[:NEXT]->(:Chapter)
+(:Chapter)-[:COVERS]->(:Concept)          notion enseignée
+(:Chapter)-[:TEACHES]->(:Skill)           compétence à acquérir
+(:Chapter)-[:REQUIRES]->(:Concept)        prérequis
+(:Chapter)-[:DEPENDS_ON {reason, concepts}]->(:Chapter)   toujours vers un chapitre PRÉCÉDENT
+```
+
+- Les **notions sont partagées** entre cours : « Clé primaire » enseignée dans *Bases de données* et demandée par *Python pour la data* est le **même nœud**.
+- **Règle d'ordre** : chaque cours a une place dans le cursus, chaque chapitre une place dans son cours. Un `DEPENDS_ON` n'est accepté que vers un chapitre qui précède (le serveur MCP refuse les autres). Le graphe des dépendances reste donc **sans cycle**. Changer l'ordre du cursus supprime les liens devenus invalides.
+- **Deux moteurs, même interface** : **Neo4j** (requêtes Cypher, parcours par chemins de longueur variable `[:DEPENDS_ON*1..20]`) quand `NEO4J_URI` est défini (Docker, Kubernetes), sinon des **tables SQLite** (développement local, tests). Un test d'intégration vérifie que les deux donnent les mêmes résultats.
+
+### Comment les liens entre chapitres sont trouvés (agent linker)
+
+```
+gather ──► (liens sémantiques à vérifier ?) ──► validate ──► apply
+```
+
+1. **gather** : pour chaque prérequis d'un chapitre, l'outil MCP `find_prerequisite_candidates` cherche les chapitres **précédents** qui l'enseignent : même nom de notion (correspondance exacte, acceptée directement), ou notion proche par **embeddings** (« Jointure SQL » ≈ « Jointure »).
+2. **validate** : un seul appel LLM confirme ou rejette les correspondances sémantiques (évite les faux liens sur un mot commun). Si le LLM échoue, seules les correspondances très proches (score ≥ 0,8) sont gardées.
+3. **apply** : création des relations `DEPENDS_ON` avec leur raison.
+
+Le bouton **« Relier aux cours précédents »** relance cet agent (utile après avoir importé un cours de base plus tard et l'avoir remonté dans le cursus).
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────┐    HTTP /api    ┌────────────────────────────┐
-│  Frontend    │ ──────────────► │  Backend FastAPI (Python)  │
-│  React/Vite  │ ◄────────────── │                            │
-└──────────────┘                 │  ├─ pypdf     (lecture PDF)│
-                                 │  ├─ ChromaDB  (vecteurs)   │
-                                 │  ├─ SQLite    (cours)      │
-                                 │  └─ Groq API               │
-                                 │      ├─ Whisper (audio)    │
-                                 │      └─ Llama 3.3 (texte)  │
-                                 └────────────────────────────┘
+┌────────────┐ /api ┌──────────────────────────── Backend FastAPI ──────────────────────────────┐
+│  Frontend  │ ───► │ Ingestion (LangGraph)                     Chat (LangGraph)                │
+│ React/Vite │ ◄─── │ load → structure ─┬─► index ─────┐         supervisor ─┬─► tutor ──────┐   │
+│ + graphe   │      │                   └─► analyze ×N ─► synthesize        ├─► navigator ──┼─► synthesizer
+│  d3-force  │      │                         → persist → linker (agent)    └─► quizmaster ─┘   │
+│  (Nginx)   │      │ Client MCP (stdio en local, streamable HTTP en conteneur)                 │
+└────────────┘      └───────────────────────────────────┬───────────────────────────────────────┘
+                                                        │ protocole MCP
+                    ┌───────────────────────────────────▼───────────────────────────────────────┐
+                    │ Serveur MCP « revisia » : search_courses, get_chapter, learning_path,      │
+                    │ find_prerequisite_candidates, add_dependency, get_knowledge_graph, ...    │
+                    │  ├─ SQLite   (cours, chapitres, quiz)                                      │
+                    │  ├─ ChromaDB (passages des cours + notions des chapitres)                  │
+                    │  └─ Neo4j    (graphe de connaissances)  — ou tables SQLite en local        │
+                    └────────────────────────────────────────────────────────────────────────────┘
+                         LLM : Llama 3.3 70B via Groq (LangChain ChatGroq) · Whisper via Groq
 ```
 
-### Fonctionnement du RAG (Retrieval-Augmented Generation)
+### Graphe d'ingestion
 
-1. **Découpage** : le texte du cours est découpé en morceaux d'environ 800 caractères qui se chevauchent un peu.
-2. **Embeddings** : chaque morceau est transformé en vecteur par un petit modèle local (`all-MiniLM-L6-v2`, intégré à ChromaDB), puis stocké dans ChromaDB.
-3. **Recherche** : la question de l'étudiant est aussi transformée en vecteur, et on récupère les 4 morceaux les plus proches.
-4. **Génération** : le LLM reçoit la question et les morceaux numérotés `[1]`, `[2]`… Il doit répondre uniquement à partir de ces extraits et les citer.
+| Nœud | Rôle |
+|---|---|
+| `load` | Texte collé, PDF (une section par page), TXT, ou audio transcrit minute par minute |
+| `structure` | Découpe en chapitres sur les titres (« Chapitre 2 », « Partie II », « # Titre », « 3. … ») avec la plage de pages ; sinon par taille |
+| `index` | Indexation RAG via MCP, **en parallèle** de l'analyse |
+| `analyze_chapter` ×N | Une instance par chapitre (API `Send`) : titre, résumé, notions, compétences, prérequis — JSON validé par Pydantic, `RetryPolicy` |
+| `synthesize` | Résumé du cours, notions clés, quiz (à partir des résumés des chapitres : aucun texte tronqué) |
+| `persist` | Jointure (`index` + `synthesize`) : enregistre le cours et construit son sous-graphe |
+| `link` | Agent linker : dépendances vers les chapitres précédents |
 
-### Technologies
+### Agents du chat
 
-| Partie | Outil | Rôle |
+| Agent | Rôle | Outils MCP |
 |---|---|---|
-| Frontend | React + Vite | Interface web |
-| Backend | FastAPI | API REST |
-| LLM | Llama 3.3 70B via **Groq** (gratuit) | Résumé, quiz, réponses |
-| Transcription | Whisper large v3 turbo via Groq | Audio → texte |
-| Base vectorielle | ChromaDB | Recherche sémantique |
-| Base de données | SQLite | Stockage des cours |
+| **Superviseur** | Choisit un ou plusieurs agents (JSON validé, routage par mots-clés en secours) | — |
+| **Tuteur** (RAG) | Explique en citant les passages `[n]` ; reformule les questions de suivi | `search_courses` |
+| **Navigateur** | Agent ReAct sur le graphe : prérequis, compétences, parcours, où une notion est enseignée | `list_courses`, `list_chapters`, `get_chapter`, `learning_path`, `find_concept`, `graph_stats` |
+| **Examinateur** | Quiz d'entraînement sur un sujet, affiché de façon interactive | `search_courses` |
+| **Synthèse** | Fusionne les rapports | — |
 
 ---
 
@@ -51,82 +110,118 @@ L'interface et les réponses sont disponibles en **français** et en **anglais**
 
 ```
 revisia/
-├── backend/
-│   ├── app/
-│   │   ├── main.py              # Routes de l'API
-│   │   ├── config.py            # Paramètres (.env, tailles, dossiers)
-│   │   ├── database.py          # Table SQLite des cours
-│   │   └── services/
-│   │       ├── documents.py     # Lecture PDF/texte + découpage
-│   │       ├── transcription.py # Audio → texte (Whisper)
-│   │       ├── llm.py           # Résumé, notions, quiz (Llama)
-│   │       └── rag.py           # Indexation, recherche, réponses citées
-│   ├── requirements.txt
-│   └── .env.example
-├── frontend/
-│   └── src/
-│       ├── App.jsx
-│       ├── api.js
-│       └── components/          # UploadForm, CourseView, Quiz, ChatPanel
-├── start.bat                    # Lance backend + frontend sous Windows
-└── README.md
+├── mcp_server/
+│   ├── server.py         # 18 outils MCP, ressource, prompt, sonde /healthz
+│   ├── graph_store.py    # Graphe : SqliteGraphStore et Neo4jGraphStore (Cypher)
+│   ├── database.py       # SQLite : cours, chapitres, ordre du cursus
+│   ├── rag.py            # ChromaDB : passages et notions
+│   └── tests/            # Graphe, règles d'ordre, protocole MCP, intégration Neo4j
+├── backend/app/
+│   ├── main.py           # API FastAPI
+│   ├── mcp_client.py     # Session MCP persistante, reconnexion, outils LangChain
+│   ├── agents/           # ingestion.py, linker.py, chat.py, prompts.py
+│   └── services/         # documents (chapitres, morceaux), transcription, llm
+├── frontend/src/components/
+│   ├── GraphView.jsx     # Graphe interactif (d3-force) + détails + parcours
+│   ├── CourseView.jsx    # Résumé, chapitres & compétences, graphe du cours, quiz
+│   └── ChatPanel.jsx     # Chat multi-agents (trace, sources, quiz interactif)
+├── k8s/                  # base (Neo4j StatefulSet, MCP, backend, frontend, Ingress, HPA, NetworkPolicies) + overlays
+├── docker-compose.yml    # Neo4j + MCP + backend + frontend
+└── Jenkinsfile
 ```
 
 ---
 
-## Installation
+## Lancement en local
 
-### Prérequis
-
-- Python 3.10 ou plus récent
-- Node.js 18 ou plus récent
-- Une clé API Groq gratuite : https://console.groq.com/keys
-
-### 1. Backend
+Prérequis : Python 3.11+, Node.js 18+, une clé Groq gratuite (https://console.groq.com/keys).
 
 ```bash
 cd backend
 python -m venv .venv
-.venv\Scripts\activate          # Windows  (Linux/Mac : source .venv/bin/activate)
-pip install -r requirements.txt
-copy .env.example .env          # Linux/Mac : cp .env.example .env
+.venv\Scripts\activate          # Linux/Mac : source .venv/bin/activate
+pip install -r ../requirements-dev.txt
+copy .env.example .env          # puis colle ta clé dans GROQ_API_KEY=
 ```
-
-Ouvre `backend/.env` et colle ta clé dans `GROQ_API_KEY=`.
-
-### 2. Frontend
 
 ```bash
-cd frontend
-npm install
+cd frontend && npm install
 ```
+
+Sous Windows : double-clique sur `start.bat`. Puis ouvre **http://localhost:5173** (API : http://localhost:8000/docs). En local, le backend lance lui-même le serveur MCP et le graphe est stocké dans SQLite (`revisia/data/`). Pour utiliser Neo4j en local, renseigne `NEO4J_URI`, `NEO4J_USER` et `NEO4J_PASSWORD` dans `backend/.env`.
+
+**Tests et qualité** (depuis `revisia/`) :
+
+```bash
+pytest
+```
+
+```bash
+ruff check .
+```
+
+Le LLM est remplacé par un faux modèle dans les tests. Le test Neo4j est ignoré sans `NEO4J_TEST_URI`, et Jenkins le lance avec un conteneur `neo4j:5.26-community`.
 
 ---
 
-## Lancement
-
-**Sous Windows**, il suffit de double-cliquer sur `start.bat`.
-
-Ou, à la main, dans deux terminaux :
+## Docker
 
 ```bash
-# Terminal 1
-cd backend
-.venv\Scripts\activate
-uvicorn app.main:app --reload --port 8000
+docker compose up --build
+```
+
+- Application : **http://localhost:8080**
+- **Neo4j Browser** : **http://localhost:7474** (utilisateur `neo4j`, mot de passe `NEO4J_PASSWORD`, `revisia-neo4j` par défaut). Exemples de requêtes Cypher :
+
+```cypher
+MATCH p = (c:Chapter)-[:DEPENDS_ON*]->(:Chapter) RETURN p
+```
+
+```cypher
+MATCH (ch:Chapter)-[:TEACHES]->(s:Skill) RETURN ch.label, collect(s.label)
+```
+
+Quatre conteneurs : `neo4j`, `revisia-mcp` (modèle d'embedding téléchargé au build), `revisia-backend`, `revisia-frontend` (Nginx non root, proxy `/api`).
+
+---
+
+## Kubernetes
+
+```bash
+kubectl create namespace revisia
 ```
 
 ```bash
-# Terminal 2
-cd frontend
-npm run dev
+kubectl -n revisia create secret generic revisia-secrets --from-literal=GROQ_API_KEY=gsk_... --from-literal=NEO4J_PASSWORD=...
 ```
 
-Puis ouvre **http://localhost:5173**.
+```bash
+kubectl apply -k k8s/overlays/production
+```
 
-La documentation automatique de l'API est disponible sur http://localhost:8000/docs.
+- **Neo4j** : StatefulSet avec volume persistant (5 Gi, 20 Gi en production), mot de passe depuis le Secret.
+- **mcp-server** : 1 réplique (SQLite + ChromaDB sur PVC), attend Neo4j au démarrage.
+- **backend** : sondes `/api/health` et `/api/ready` (ping MCP), système de fichiers en lecture seule, reconnexion MCP automatique.
+- **frontend** : 2 réplicas + HPA, rolling update sans interruption.
+- **NetworkPolicies** : frontend → backend → serveur MCP → Neo4j, rien d'autre.
+- Overlays **staging** et **production** (TLS cert-manager).
 
-> Au premier import d'un cours, ChromaDB télécharge son modèle d'embedding (environ 80 Mo). C'est fait une seule fois.
+---
+
+## CI/CD Jenkins
+
+`Jenkinsfile` (job multibranch, *Script Path* `revisia/Jenkinsfile`) :
+
+| Étape | Détail |
+|---|---|
+| Qualité (parallèle) | `ruff` + `pytest` avec couverture **et un vrai Neo4j** en conteneur · build du frontend · rendu Kustomize des overlays |
+| Images Docker | Build parallèle des 3 images |
+| Scan Trivy | Vulnérabilités HIGH/CRITICAL |
+| Publication | Push vers le registre (`main`, `develop`) |
+| Staging | Namespace + Secrets (Groq, Neo4j), `kustomize edit set image`, `apply -k`, attente de Neo4j et des déploiements, test de fumée |
+| Production | Validation manuelle, même procédure, **rollback automatique** en cas d'échec |
+
+Credentials : `docker-registry`, `kubeconfig-staging`, `kubeconfig-prod`, `groq-api-key`, `revisia-neo4j-password`.
 
 ---
 
@@ -134,27 +229,30 @@ La documentation automatique de l'API est disponible sur http://localhost:8000/d
 
 | Méthode | Route | Description |
 |---|---|---|
-| GET | `/api/health` | État du serveur et de la clé Groq |
-| GET | `/api/courses` | Liste des cours |
-| POST | `/api/courses` | Importer un cours (`title`, `language`, `file`) |
-| GET | `/api/courses/{id}` | Détail d'un cours (résumé, notions, quiz) |
-| DELETE | `/api/courses/{id}` | Supprimer un cours |
-| POST | `/api/chat` | Poser une question (`question`, `course_id`, `language`) |
+| GET | `/api/health` · `/api/ready` | Sondes de vie et de disponibilité |
+| GET / POST | `/api/courses` | Cursus ordonné · import (`202`, analyse en tâche de fond) |
+| GET / DELETE | `/api/courses/{id}` | Détail (chapitres, résumé, quiz) · suppression |
+| PATCH | `/api/courses/{id}/position` | Place dans le cursus (supprime les liens devenus invalides) |
+| POST | `/api/courses/{id}/relink` | Relance l'agent linker |
+| GET | `/api/chapters/{id}` | Notions, compétences, prérequis, dépend de / requis par |
+| GET | `/api/chapters/{id}/path` | Parcours de révision |
+| GET | `/api/chapters/{id}/candidates` | Chapitres précédents candidats comme prérequis |
+| POST / DELETE | `/api/dependencies` | Ajouter / retirer un lien (400 si le prérequis ne précède pas) |
+| GET | `/api/graph` · `/api/graph/stats` | Graphe (filtres `course_id`, `types`) · statistiques |
+| GET | `/api/concepts?name=` | Où une notion est enseignée et demandée |
+| POST | `/api/chat` | Question aux agents → réponse, sources, quiz, agents, trace |
 
 ---
 
-## Limites actuelles
+## Limites
 
-- Pour la génération du résumé et du quiz, seuls les 15 000 premiers caractères du cours sont envoyés au LLM, à cause des limites du plan gratuit Groq.
-- Les fichiers audio sont limités à 25 Mo, la limite de l'API Whisper de Groq.
-- Le modèle d'embedding `all-MiniLM-L6-v2` est surtout entraîné sur de l'anglais : la recherche est un peu moins précise en français.
-- Il n'y a pas de comptes utilisateurs : l'application est prévue pour un seul utilisateur, en local.
-- Les PDF scannés (images) ne sont pas lus, car il n'y a pas d'OCR.
+- La qualité des chapitres dépend des titres du document ; sans titres, le cours est découpé par taille et le LLM nomme les parties.
+- Les prérequis sont extraits par le LLM : les liens sont modifiables (retrait d'un lien dans l'onglet Chapitres).
+- Le modèle d'embedding `all-MiniLM-L6-v2` est surtout entraîné sur l'anglais.
+- Les PDF scannés ne sont pas lus (pas d'OCR). Pas de comptes utilisateurs.
 
 ## Perspectives
 
-- Résumer les cours longs morceau par morceau (map-reduce) pour ne plus tronquer le texte.
-- Utiliser un modèle d'embedding multilingue (ex. `paraphrase-multilingual-MiniLM-L12-v2`) et ajouter l'arabe.
-- Évaluer la qualité des réponses du RAG (pertinence, fidélité aux sources).
-- Ajouter des comptes utilisateurs et un suivi de progression aux quiz.
-- Proposer un mode 100 % local avec Ollama pour ne pas dépendre d'une API externe.
+- Suivi de progression par compétence (résultats des quiz reliés aux nœuds `Skill`).
+- Répétition espacée guidée par le graphe (réviser d'abord les prérequis faibles).
+- Embeddings multilingues, mode 100 % local avec Ollama.

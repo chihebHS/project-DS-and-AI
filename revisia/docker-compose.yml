@@ -1,0 +1,89 @@
+# RevisIA en local avec Docker : docker compose up --build
+#   Application : http://localhost:8080
+#   Neo4j Browser (graphe de connaissances) : http://localhost:7474  (neo4j / valeur de NEO4J_PASSWORD)
+# La clé Groq est lue dans backend/.env (GROQ_API_KEY=...).
+name: revisia
+
+services:
+  neo4j:
+    image: neo4j:5.26-community
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-revisia-neo4j}
+      NEO4J_server_memory_heap_max__size: 512m
+    ports:
+      - "7474:7474"  # Neo4j Browser, pour explorer le graphe en Cypher
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:7474 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  mcp-server:
+    build:
+      context: .
+      dockerfile: mcp_server/Dockerfile
+    image: revisia-mcp:local
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-revisia-neo4j}
+    volumes:
+      - revisia-data:/data
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: revisia-backend:local
+    env_file:
+      - path: backend/.env
+        required: false
+    environment:
+      MCP_TRANSPORT: http
+      MCP_URL: http://mcp-server:8765/mcp
+      CORS_ORIGINS: http://localhost:8080
+    volumes:
+      - backend-state:/state
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/ready', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: revisia-frontend:local
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "8080:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  neo4j-data:
+  revisia-data:
+  backend-state:

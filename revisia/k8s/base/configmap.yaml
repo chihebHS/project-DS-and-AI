@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: revisia-config
+data:
+  GROQ_MODEL: llama-3.3-70b-versatile
+  GROQ_ROUTER_MODEL: llama-3.3-70b-versatile
+  WHISPER_MODEL: whisper-large-v3-turbo
+  MCP_TRANSPORT: http
+  MCP_URL: http://revisia-mcp:8765/mcp
+  LOG_LEVEL: INFO
+  RAG_TOP_K: "4"
+  MAX_UPLOAD_MB: "25"
+  AUTO_LINK_SCORE: "0.8"
+  CORS_ORIGINS: https://revisia.example.com

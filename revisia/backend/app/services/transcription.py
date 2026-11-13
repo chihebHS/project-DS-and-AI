@@ -2,7 +2,7 @@
 from pathlib import Path
 
 from ..config import WHISPER_MODEL
-from .llm import get_client
+from .llm import get_groq_client as get_client
 
 
 def format_time(seconds):

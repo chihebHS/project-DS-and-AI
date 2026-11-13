@@ -1,61 +1,85 @@
-"""Appels au modèle de langage (Llama via l'API gratuite Groq)."""
+"""Accès aux modèles : Llama 3.3 via Groq, à travers LangChain (ChatGroq).
+
+- `get_chat_model()` : le modèle de chat utilisé par les agents LangGraph.
+- `ainvoke_json()` : appel en mode JSON validé par un schéma Pydantic (extraction, routage).
+- `get_groq_client()` : client Groq brut, pour Whisper (transcription audio).
+
+Les tests remplacent le modèle par un faux avec `set_chat_model()` : aucun appel réseau.
+"""
 import json
+import re
 
-from groq import Groq
-
-from ..config import GROQ_API_KEY, GROQ_MODEL, MAX_CHARS_FOR_GENERATION
-
-_client = None
+from ..config import GROQ_API_KEY, GROQ_MODEL, GROQ_ROUTER_MODEL
 
 LANGUAGE_NAMES = {"fr": "français", "en": "anglais"}
 
 
-def get_client():
-    global _client
+class LLMNotConfigured(RuntimeError):
+    pass
+
+
+_models = {}
+_override = None
+_groq_client = None
+
+
+def _require_key():
     if not GROQ_API_KEY:
-        raise RuntimeError("Clé GROQ_API_KEY manquante : ajoute-la dans backend/.env")
-    if _client is None:
-        _client = Groq(api_key=GROQ_API_KEY)
-    return _client
+        raise LLMNotConfigured("Clé GROQ_API_KEY manquante : ajoute-la dans backend/.env")
 
 
-def ask_llm(messages, json_mode=False, temperature=0.3):
-    options = {"response_format": {"type": "json_object"}} if json_mode else {}
-    response = get_client().chat.completions.create(
-        model=GROQ_MODEL,
-        messages=messages,
-        temperature=temperature,
-        **options,
-    )
-    return response.choices[0].message.content
+def get_chat_model(role="main"):
+    """role = "main" (réponses, extraction) ou "router" (décisions rapides du superviseur)."""
+    if _override is not None:
+        return _override
+    _require_key()
+    if role not in _models:
+        from langchain_groq import ChatGroq
+
+        model = GROQ_ROUTER_MODEL if role == "router" else GROQ_MODEL
+        _models[role] = ChatGroq(model=model, api_key=GROQ_API_KEY, temperature=0.2, max_retries=2)
+    return _models[role]
 
 
-def generate_study_material(text, language):
-    """Génère en un seul appel : résumé, notions clés et quiz.
+def set_chat_model(model):
+    """Injecte un modèle (tests). None revient au vrai modèle Groq."""
+    global _override
+    _override = model
 
-    Un seul appel au lieu de trois permet de rester dans les limites du plan gratuit.
+
+def get_groq_client():
+    global _groq_client
+    _require_key()
+    if _groq_client is None:
+        from groq import Groq
+
+        _groq_client = Groq(api_key=GROQ_API_KEY)
+    return _groq_client
+
+
+def extract_json(text):
+    """Récupère l'objet JSON d'une réponse, même entouré de texte ou de ```json."""
+    text = (text or "").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            raise
+        return json.loads(match.group(0))
+
+
+async def ainvoke_json(messages, schema, role="main"):
+    """Appelle le LLM en mode JSON et valide la réponse avec le schéma Pydantic `schema`.
+
+    Une réponse invalide lève une exception : le nœud LangGraph qui appelle cette fonction
+    a une RetryPolicy, l'appel est donc retenté automatiquement.
     """
-    lang = LANGUAGE_NAMES.get(language, "français")
-    if len(text) > MAX_CHARS_FOR_GENERATION:
-        text = text[:MAX_CHARS_FOR_GENERATION]
+    model = get_chat_model(role).bind(response_format={"type": "json_object"})
+    response = await model.ainvoke(messages)
+    return schema.model_validate(extract_json(response.content))
 
-    prompt = f"""Tu es un assistant pédagogique. Voici le contenu d'un cours.
-Réponds uniquement en {lang}, au format JSON suivant :
-{{
-  "summary": "résumé clair du cours en 10 à 15 lignes, avec des tirets pour les points importants",
-  "key_concepts": [{{"term": "notion", "definition": "explication courte"}}],
-  "quiz": [{{"question": "...", "choices": ["A", "B", "C", "D"], "answer_index": 0, "explanation": "..."}}]
-}}
-Donne entre 5 et 8 notions clés et exactement 5 questions à choix multiples.
-Base-toi uniquement sur le contenu du cours.
 
-CONTENU DU COURS :
-{text}"""
-
-    raw = ask_llm([{"role": "user", "content": prompt}], json_mode=True)
-    data = json.loads(raw)
-    return {
-        "summary": data.get("summary", ""),
-        "key_concepts": data.get("key_concepts", []),
-        "quiz": data.get("quiz", []),
-    }
+async def ainvoke_text(messages, role="main"):
+    response = await get_chat_model(role).ainvoke(messages)
+    return response.content.strip()
