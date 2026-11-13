@@ -1,0 +1,15 @@
+**/__pycache__
+**/*.pyc
+**/.venv
+**/.env
+**/node_modules
+**/dist
+**/.pytest_cache
+**/.ruff_cache
+data
+backend/state
+backend/data
+k8s
+.git
+*.md
+!README.md

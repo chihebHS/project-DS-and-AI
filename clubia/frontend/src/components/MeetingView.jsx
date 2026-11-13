@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { deleteMeeting, getMeeting } from '../api'
 import TaskTable from './TaskTable'
 
-export default function MeetingView({ meetingId, onDeleted }) {
+export default function MeetingView({ meetingId, onDeleted, onChanged }) {
   const [meeting, setMeeting] = useState(null)
   const [showText, setShowText] = useState(false)
 
@@ -13,6 +13,13 @@ export default function MeetingView({ meetingId, onDeleted }) {
     setShowText(false)
     load()
   }, [meetingId])
+
+  // L'analyse tourne en tâche de fond : on interroge le backend jusqu'à ce qu'elle soit finie
+  useEffect(() => {
+    if (meeting?.status !== 'processing') return
+    const timer = setTimeout(() => load().then(onChanged), 2000)
+    return () => clearTimeout(timer)
+  }, [meeting])
 
   if (!meeting) return <p className="muted">Chargement…</p>
 
@@ -37,6 +44,12 @@ export default function MeetingView({ meetingId, onDeleted }) {
           </button>
         </div>
         {meeting.status === 'error' && <div className="alert">Erreur pendant l'analyse : {meeting.error}</div>}
+        {meeting.status === 'processing' && (
+          <div className="processing">
+            <span className="spinner" /> Analyse en cours par le graphe LangGraph : lecture, indexation RAG,
+            extraction des décisions et des tâches…
+          </div>
+        )}
 
         <h3>Résumé</h3>
         <p className="pre">{meeting.summary || 'Pas de résumé.'}</p>

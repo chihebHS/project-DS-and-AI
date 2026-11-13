@@ -6,6 +6,7 @@ export default function TaskBoard() {
   const [tasks, setTasks] = useState([])
   const [status, setStatus] = useState('')
   const [assignee, setAssignee] = useState('')
+  const [lateOnly, setLateOnly] = useState(false)
   const [newTask, setNewTask] = useState({ description: '', assignee: '', due_date: '' })
 
   // On charge toutes les tâches puis on filtre ici : la liste des membres reste complète
@@ -15,19 +16,27 @@ export default function TaskBoard() {
     load()
   }, [])
 
-  const members = [...new Set(tasks.map((t) => t.assignee))].sort()
-  const visible = tasks.filter((t) => (!status || t.status === status) && (!assignee || t.assignee === assignee))
+  // Une tâche peut avoir plusieurs responsables (« Sarah, Karim »)
+  const people = (t) => (t.assignee || '').split(',').map((p) => p.trim())
+  const members = [...new Set(tasks.flatMap(people))].sort()
+  const visible = tasks.filter(
+    (t) => (!status || t.status === status) && (!assignee || people(t).includes(assignee)) && (!lateOnly || t.overdue),
+  )
 
   const add = async (e) => {
     e.preventDefault()
     if (!newTask.description.trim()) return
-    await createTask({
-      description: newTask.description,
-      assignee: newTask.assignee || 'Non attribué',
-      due_date: newTask.due_date || null,
-    })
-    setNewTask({ description: '', assignee: '', due_date: '' })
-    load()
+    try {
+      await createTask({
+        description: newTask.description,
+        assignee: newTask.assignee,
+        due_date: newTask.due_date || null,
+      })
+      setNewTask({ description: '', assignee: '', due_date: '' })
+      load()
+    } catch (err) {
+      alert(err.message)
+    }
   }
 
   return (
@@ -51,6 +60,9 @@ export default function TaskBoard() {
               </option>
             ))}
           </select>
+          <label className="check">
+            <input type="checkbox" checked={lateOnly} onChange={(e) => setLateOnly(e.target.checked)} /> En retard
+          </label>
           <span className="muted">{visible.length} tâche(s)</span>
         </div>
         <TaskTable tasks={visible} onChange={load} />

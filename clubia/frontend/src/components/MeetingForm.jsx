@@ -83,7 +83,7 @@ export default function MeetingForm({ onCreated }) {
         )}
 
         <button type="submit" className="primary" disabled={loading || !ready}>
-          {loading ? 'Analyse en cours… (peut prendre 30 s)' : 'Analyser la réunion'}
+          {loading ? 'Envoi…' : 'Analyser la réunion'}
         </button>
         {error && <p className="error">{error}</p>}
       </form>

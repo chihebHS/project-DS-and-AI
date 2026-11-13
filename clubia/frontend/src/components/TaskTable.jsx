@@ -7,7 +7,11 @@ export default function TaskTable({ tasks, onChange, showMeeting = true }) {
   if (tasks.length === 0) return <p className="muted">Aucune tâche.</p>
 
   const save = async (id, changes) => {
-    await updateTask(id, changes)
+    try {
+      await updateTask(id, changes)
+    } catch (err) {
+      alert(err.message)
+    }
     onChange()
   }
 
@@ -39,6 +43,7 @@ export default function TaskTable({ tasks, onChange, showMeeting = true }) {
             <td>
               <input
                 className="cell"
+                key={t.assignee}
                 defaultValue={t.assignee}
                 onBlur={(e) => e.target.value !== t.assignee && save(t.id, { assignee: e.target.value })}
               />

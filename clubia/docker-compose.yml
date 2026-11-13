@@ -1,0 +1,62 @@
+# ClubIA en local avec Docker : docker compose up --build  →  http://localhost:8080
+# La clé Groq est lue dans backend/.env (GROQ_API_KEY=...).
+name: clubia
+
+services:
+  mcp-server:
+    build:
+      context: .
+      dockerfile: mcp_server/Dockerfile
+    image: clubia-mcp:local
+    volumes:
+      - clubia-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: clubia-backend:local
+    env_file:
+      - path: backend/.env
+        required: false
+    environment:
+      MCP_TRANSPORT: http
+      MCP_URL: http://mcp-server:8765/mcp
+      CORS_ORIGINS: http://localhost:8080
+    volumes:
+      - backend-state:/state
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/ready', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: clubia-frontend:local
+    environment:
+      BACKEND_URL: http://backend:8001
+    ports:
+      - "8080:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  clubia-data:
+  backend-state:

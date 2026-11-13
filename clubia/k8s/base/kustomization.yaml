@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: clubia
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: clubia
+resources:
+  - configmap.yaml
+  - mcp-server.yaml
+  - backend.yaml
+  - frontend.yaml
+  - ingress.yaml
+  - networkpolicy.yaml
+# Les images (registre + tag) sont définies dans chaque overlay

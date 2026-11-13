@@ -1,7 +1,7 @@
 """Lecture des fichiers (PDF, texte) et découpage en morceaux (chunks)."""
 from pypdf import PdfReader
 
-from ..config import CHUNK_OVERLAP, CHUNK_SIZE
+from ..config import CHUNK_OVERLAP, CHUNK_SIZE, MAX_CHARS_PER_PART, PART_OVERLAP
 
 
 def read_pdf(path):
@@ -38,3 +38,27 @@ def split_into_chunks(sections):
             if start + CHUNK_SIZE >= len(text):
                 break
     return chunks
+
+
+def split_for_llm(text, max_chars=MAX_CHARS_PER_PART, overlap=PART_OVERLAP):
+    """Découpe un long compte-rendu en parties analysables par le LLM.
+
+    Avant : seuls les 15 000 premiers caractères étaient lus. Maintenant, chaque partie est
+    analysée en parallèle par le graphe d'ingestion, puis les résultats sont fusionnés.
+    On coupe de préférence sur un saut de ligne ou une fin de phrase.
+    """
+    text = text.strip()
+    if len(text) <= max_chars:
+        return [text] if text else []
+    parts, start = [], 0
+    while start < len(text):
+        end = min(start + max_chars, len(text))
+        if end < len(text):
+            cut = max(text.rfind("\n", start + max_chars // 2, end), text.rfind(". ", start + max_chars // 2, end))
+            if cut > start:
+                end = cut + 1
+        parts.append(text[start:end].strip())
+        if end >= len(text):
+            break
+        start = max(end - overlap, start + 1)
+    return [p for p in parts if p]

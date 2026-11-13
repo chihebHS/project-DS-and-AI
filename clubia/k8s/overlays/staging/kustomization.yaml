@@ -1,0 +1,52 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Le namespace est créé par Jenkins (kubectl create namespace) avant le déploiement
+namespace: clubia-staging
+resources:
+  - ../../base
+# Jenkins remplace ces tags à chaque déploiement (kustomize edit set image)
+images:
+  - name: clubia-mcp
+    newName: registry.example.com/clubia/clubia-mcp
+    newTag: latest
+  - name: clubia-backend
+    newName: registry.example.com/clubia/clubia-backend
+    newTag: latest
+  - name: clubia-frontend
+    newName: registry.example.com/clubia/clubia-frontend
+    newTag: latest
+patches:
+  - target:
+      kind: Ingress
+      name: clubia
+    patch: |
+      - op: replace
+        path: /spec/rules/0/host
+        value: staging.clubia.example.com
+  - target:
+      kind: ConfigMap
+      name: clubia-config
+    patch: |
+      - op: replace
+        path: /data/CORS_ORIGINS
+        value: https://staging.clubia.example.com
+      - op: replace
+        path: /data/LOG_LEVEL
+        value: DEBUG
+  - target:
+      kind: Deployment
+      name: clubia-frontend
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: clubia-frontend
+    patch: |
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+      - op: replace
+        path: /spec/maxReplicas
+        value: 2

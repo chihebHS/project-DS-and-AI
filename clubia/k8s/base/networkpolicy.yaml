@@ -1,0 +1,39 @@
+# Le serveur MCP (qui détient les données) n'est joignable que par le backend.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: clubia-mcp-from-backend-only
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: clubia
+      app.kubernetes.io/component: mcp-server
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: clubia
+              app.kubernetes.io/component: backend
+      ports:
+        - port: 8765
+---
+# Le backend n'est joignable que par le frontend (Nginx).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: clubia-backend-from-frontend-only
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: clubia
+      app.kubernetes.io/component: backend
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: clubia
+              app.kubernetes.io/component: frontend
+      ports:
+        - port: 8001
